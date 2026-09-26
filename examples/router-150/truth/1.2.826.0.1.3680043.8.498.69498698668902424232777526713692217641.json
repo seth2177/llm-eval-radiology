@@ -1,0 +1,17 @@
+{
+ "study_uid": "1.2.826.0.1.3680043.8.498.69498698668902424232777526713692217641",
+ "kind": "qa",
+ "nodule_present": false,
+ "nodule": null,
+ "qa_injected": {
+  "bias_hu": 3.0,
+  "cup_hu": 2.0,
+  "noise_hu": 6.0
+ },
+ "qa_expected": {
+  "ct_hu": 3.01,
+  "uniformity_hu": 1.28,
+  "noise_hu": 6.0,
+  "result": "PASS"
+ }
+}

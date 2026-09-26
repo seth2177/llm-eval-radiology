@@ -1,0 +1,11 @@
+{
+ "study_uid": "1.2.826.0.1.3680043.8.498.9116784333358979245697738195588938747",
+ "kind": "chest",
+ "nodule_present": true,
+ "nodule": {
+  "laterality": "right",
+  "diameter_mm": 14.0,
+  "slice": 13,
+  "density": "solid"
+ }
+}

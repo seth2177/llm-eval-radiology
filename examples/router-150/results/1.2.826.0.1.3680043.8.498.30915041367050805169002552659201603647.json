@@ -1,0 +1,19 @@
+{
+ "study_uid": "1.2.826.0.1.3680043.8.498.30915041367050805169002552659201603647",
+ "rule": "ct-chest-by-bodypart",
+ "ai": {
+  "model": "lung-nodule",
+  "model_version": "0.2.0-demo",
+  "result": "POSITIVE",
+  "findings": [
+   {
+    "type": "pulmonary_nodule",
+    "present": true,
+    "laterality": "right",
+    "diameter_mm": 6.3,
+    "slice_index": 8,
+    "confidence": 0.92
+   }
+  ]
+ }
+}
