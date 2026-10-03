@@ -26,3 +26,31 @@ jobs:
         run: python -m pytest -q
       - name: Checker self-test
         run: python -m llm_eval selftest --data examples/router-150
+
+  package:
+    # The wheel on its own, installed into a clean venv and run from outside the checkout.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Install the wheel into a clean venv
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          bin="$RUNNER_TEMP/venv/bin"; [ -d "$bin" ] || bin="$RUNNER_TEMP/venv/Scripts"
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/python" -m pip install dist/*.whl
+      - name: Self-test from outside the repo, on the bundled example data
+        working-directory: ${{ runner.temp }}
+        run: llm-eval-radiology selftest

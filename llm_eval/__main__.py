@@ -8,7 +8,12 @@
   python -m llm_eval prompts --data examples/router-150 --out prompts.jsonl
   python -m llm_eval selftest --data examples/router-150
 
---data is a folder holding results/ and truth/ (a dicom-ai-router workdir works as is).
+--data is a folder holding results/ and truth/ (a dicom-ai-router workdir works as is). It defaults to
+"example": the 150 studies in examples/router-150, which also ship inside the installed package, so
+
+  pip install llm-eval-radiology && llm-eval-radiology selftest
+
+works from any folder.
 """
 from __future__ import annotations
 
@@ -22,6 +27,17 @@ from .models import AnthropicModel, BedrockModel, ModelError, OllamaModel, OpenA
 from .prompt import PROMPT_VERSION, SYSTEM, user_message
 from .run import evaluate, summarize, write
 from .synthetic import multi_nodule_variants
+
+EXAMPLE = "example"
+
+
+def _data_dir(p: Path) -> Path:
+    """"example" is the bundled router-150 set: inside the installed package, or examples/ in a checkout."""
+    if str(p) != EXAMPLE or p.exists():
+        return p
+    here = Path(__file__).resolve().parent
+    installed, checkout = here / "_data" / "router-150", here.parent / "examples" / "router-150"
+    return installed if installed.exists() else checkout
 
 
 def _model(a):
@@ -41,11 +57,13 @@ def _model(a):
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="llm_eval")
+    prog = "llm-eval-radiology" if Path(sys.argv[0]).stem == "llm-eval-radiology" else "python -m llm_eval"
+    ap = argparse.ArgumentParser(prog=prog)
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("run", "selftest", "prompts"):
         p = sub.add_parser(name)
-        p.add_argument("--data", type=Path, required=True, help="folder with results/ and truth/")
+        p.add_argument("--data", type=Path, default=Path(EXAMPLE),
+                       help='folder with results/ and truth/ (default "example": the bundled 150 studies)')
     pr = sub.choices["prompts"]
     pr.add_argument("--out", type=Path, required=True, help="JSONL file: one prompt (system + user) per study uid")
     pr.add_argument("--limit", type=int, help="only the first N chest studies")
@@ -64,7 +82,8 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     try:
-        cases = load(a.data / "results", a.data / "truth")
+        data = _data_dir(a.data)
+        cases = load(data / "results", data / "truth")
     except FileNotFoundError as e:
         print(f"llm_eval: {e}", file=sys.stderr)
         return 2

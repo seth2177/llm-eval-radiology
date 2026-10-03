@@ -4,3 +4,6 @@ __pycache__/
 .ruff_cache/
 out/
 .env
+dist/
+build/
+*.egg-info/

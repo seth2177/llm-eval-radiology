@@ -1,6 +1,6 @@
 # llm-eval-radiology
 
-[![CI](https://github.com/seth2177/llm-eval-radiology/actions/workflows/ci.yml/badge.svg)](https://github.com/seth2177/llm-eval-radiology/actions/workflows/ci.yml)
+[![CI](https://github.com/seth2177/llm-eval-radiology/actions/workflows/ci.yml/badge.svg)](https://github.com/seth2177/llm-eval-radiology/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/llm-eval-radiology)](https://pypi.org/project/llm-eval-radiology/)
 
 **When an AI-drafted radiology report is wrong, was it the detector or the language model?**
 
@@ -33,6 +33,15 @@ python -m pip install -r requirements.txt
 
 python -m llm_eval selftest --data examples/router-150                  # prove the checker first
 python -m llm_eval run --data examples/router-150 --model scripted --out out/scripted
+```
+
+Or install it from PyPI and run the same thing from any folder. The 150 example studies ship inside the
+package, and `--data` defaults to them:
+
+```bash
+pip install llm-eval-radiology
+llm-eval-radiology selftest
+llm-eval-radiology run --model scripted --out out/scripted
 ```
 
 Then with a real model (your key, your spend; `--limit` caps it):

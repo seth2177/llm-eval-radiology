@@ -161,6 +161,16 @@ def test_cli_run_and_selftest(tmp_path, capsys):
     assert "SELFTEST PASS" in out and "multi-nodule 57/57" in out
 
 
+def test_bundled_example_is_the_default_data(tmp_path, monkeypatch, capsys):
+    from llm_eval.__main__ import _data_dir
+    monkeypatch.chdir(tmp_path)                                  # any folder, as after pip install
+    d = _data_dir(Path("example"))
+    assert (d / "truth").is_dir() and len(list((d / "truth").glob("*.json"))) == 150
+    assert _data_dir(tmp_path) == tmp_path                       # a real folder is used as given
+    assert main(["prompts", "--out", str(tmp_path / "p.jsonl")]) == 0
+    assert "108 prompts" in capsys.readouterr().out
+
+
 def test_openai_body_suits_reasoning_models():
     seen = []
     m = OpenAIModel(model="gpt-x", api_key="k", client=_mock(seen, {"choices": [{"message": {"content": "ok"}}]}))
