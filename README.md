@@ -63,10 +63,10 @@ density and Fleischner size band, wrong-side detections, and size error on true 
 | `OMISSION` | a detector finding missing from the report |
 | `LATERALITY` | right and left swapped |
 | `SIZE` / `SIZE_MISSING` | size off by more than rounding (0.5 mm), or not given |
-| `FOLLOWUP_WRONG` / `FOLLOWUP_MISSING` | recommendation doesn't match Fleischner 2017 for the detector's size, or is absent |
+| `FOLLOWUP_WRONG` / `FOLLOWUP_MISSING` | recommendation doesn't match Fleischner 2017 for the detector's size (the multiple-nodule table when it reported more than one), or is absent |
 | `FOLLOWUP_UNWARRANTED` | imaging follow-up recommended when there is no nodule |
 | `UNPARSEABLE` | the checker can't tell what the report says, so a human reviews it |
-| `OUT_OF_SCOPE` | the detector reported more than one nodule (not scored, see Limits) |
+| `OUT_OF_SCOPE` | the detector reported more than six nodules (not scored) |
 
 **Attribution.** Crossing the two layers. The detector counts as right only when it found the nodule on the
 correct side at a size that keeps the patient in the correct Fleischner category (or correctly found nothing):
@@ -87,7 +87,9 @@ The checker is rule-based and deterministic, so every verdict traces to a line o
    negations like "no additional nodules" and negated alternatives like "PET/CT is not needed"), then plants
    exactly one known mistake per report, including size errors just past the 0.5 mm tolerance. `selftest`
    plants one in every report, then none, across three seeds. The checker has to find exactly what was
-   planted, with no false alarms, or CI fails.
+   planted, with no false alarms, or CI fails. The router data never has two detector findings on one study,
+   so `selftest` also runs 57 multi-nodule variants of it, where the planted mistakes include the
+   single-nodule recommendation applied to several nodules.
 2. **Real-world phrasing.** `tests/test_checker.py` holds impressions written the way radiologists and LLMs
    write them: `0.6 cm`, `6 by 7 mm`, `6,3 mm`, `RUL`, `6-12mo`, `six to twelve months`, numbered lists,
    "lungs are clear without pulmonary nodules."
@@ -98,7 +100,8 @@ The checker is rule-based and deterministic, so every verdict traces to a line o
    scan before it, and a thyroid nodule written up as if it were in the lung.
 
 When a report is ambiguous (two sides or two sizes in one sentence, "less than 6 mm," "stable" or "previously"
-with no prior study to compare against) the checker returns `UNPARSEABLE` for human review instead of guessing.
+with no prior study to compare against, or several nodules that can be matched to the detector's findings in
+two ways with different errors) the checker returns `UNPARSEABLE` for human review instead of guessing.
 That is a design rule, not a proof: a phrasing nobody has tested yet can still fool it, which is why every
 impression is kept in `cases.jsonl` for review.
 
@@ -142,8 +145,11 @@ real ones.
 - One nodule type (pulmonary nodule) and English impressions. The checker reads side, size and follow-up. It
   doesn't read lobe (beyond mapping RUL/LLL etc. to a side), morphology, or comparison with priors; comparison
   language is flagged for review.
-- Single nodules only. Fleischner has a separate table for multiple nodules, which isn't implemented, so studies
-  where the detector reports more than one nodule are marked `OUT_OF_SCOPE` and not scored.
+- Multiple nodules are scored with Fleischner's multiple solid-nodule table, by the largest nodule. The
+  multiple subsolid table isn't implemented (the detector reports no density). Which sentence describes which
+  nodule is decided by a written-down rule (size first, then side; see `docs/METHOD.md`), and the multi-nodule
+  self-test runs on synthetic variants, because the router data never has two detector findings on one study.
+  More than six findings on one study are `OUT_OF_SCOPE`.
 - Fleischner 2017 applies to incidental nodules in low-risk adults 35 and over. It does not cover screening
   (Lung-RADS), younger patients, known cancer or immunosuppression.
 - The data is synthetic. Real reports carry history, comparisons and hedging that this checker doesn't try to
@@ -158,7 +164,8 @@ llm_eval/detector.py     layer 1 metrics, Wilson intervals
 llm_eval/prompt.py       the impression prompt (versioned)
 llm_eval/models/         anthropic, openai, ollama adapters + the scripted model
 llm_eval/checker.py      layer 2: read the impression, compare with the findings
-llm_eval/fleischner.py   follow-up categories
+llm_eval/fleischner.py   follow-up categories (single and multiple nodules)
+llm_eval/synthetic.py    multi-nodule variants for the checker self-test
 llm_eval/run.py          evaluation, attribution, checker meta-evaluation
 examples/router-150/     150 synthetic studies from dicom-ai-router
 docs/METHOD.md           definitions, and how each number is computed

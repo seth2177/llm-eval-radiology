@@ -21,6 +21,7 @@ from .cases import load, nodule_cases
 from .models import AnthropicModel, BedrockModel, ModelError, OllamaModel, OpenAIModel, ReplayModel, ScriptedModel
 from .prompt import PROMPT_VERSION, SYSTEM, user_message
 from .run import evaluate, summarize, write
+from .synthetic import multi_nodule_variants
 
 
 def _model(a):
@@ -101,14 +102,19 @@ def _prompts(cases, out: Path, limit: int | None) -> int:
 
 
 def _selftest(cases) -> int:
-    """Plant an error in every report, then in none. The checker must catch all and flag none."""
+    """Plant an error in every report, then in none. The checker must catch all and flag none, on the router's
+    studies and on multi-nodule variants of them (the router data has no study with two findings)."""
+    multi = multi_nodule_variants(cases)
     ok = True
     for rate, label in ((1.0, "every report has one planted error"), (0.0, "no planted errors")):
         for seed in range(3):
             m = ScriptedModel(error_rate=rate, seed=seed)
-            res = evaluate(cases, m)
+            res = evaluate(cases + multi, m)
             misses = [r for r in res if set(r.errors) != ({r.planted} if r.planted else set())]
-            print(f"{label}, seed {seed}: {len(res) - len(misses)}/{len(res)} exact")
+            n_multi = sum(len(r.ai) > 1 for r in res)
+            miss_multi = sum(len(r.ai) > 1 for r in misses)
+            print(f"{label}, seed {seed}: {len(res) - len(misses)}/{len(res)} exact "
+                  f"(multi-nodule {n_multi - miss_multi}/{n_multi})")
             for r in misses[:5]:
                 print(f"   planted={r.planted} found={r.errors} :: {r.impression}")
             ok &= not misses

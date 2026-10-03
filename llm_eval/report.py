@@ -41,7 +41,7 @@ def markdown(s: dict, results: list[CaseResult]) -> str:
         "## Layer 2: impression vs detector findings",
         "",
         f"- Faithful reports: {_pct(llm['faithful'])}",
-        *([f"- Not scored (model error or more than one finding): {llm['not_scored']}"] if llm["not_scored"] else []),
+        *([f"- Not scored (model error, or more than six findings): {llm['not_scored']}"] if llm["not_scored"] else []),
         "",
         "| Error | Reports |",
         "|---|---|",

@@ -1,6 +1,7 @@
 """Layer 1: how good is the detector, judged against ground truth.
 
-One nodule at most per synthetic study, so matching is simple:
+Ground truth has one nodule at most per synthetic study, so matching is simple
+(the model may still report several):
   TP        truth has a nodule, the model reports one on the same side
   WRONG_SIDE truth has a nodule, the model reports one only on the other side
   FN        truth has a nodule, the model reports none
@@ -32,16 +33,16 @@ def outcome(case: Case) -> str:
 
 
 def management_ok(case: Case) -> bool:
-    """A true positive whose measured size still lands in the right Fleischner category.
+    """A true positive whose measured size(s) still land in the right Fleischner category.
 
     A 5 mm nodule measured as 6.3 mm is found on the right side, but it moves the patient
     from "no routine follow-up" to "CT in 6-12 months". Attribution treats that as a
-    detector error, not a correct report.
+    detector error, not a correct report. Extra findings count too: with more than one,
+    the multiple-nodule table applies.
     """
     if outcome(case) != TP:
         return False
-    f = next(f for f in case.ai if f.laterality == case.truth.laterality)
-    return F.category(f.diameter_mm) == F.category(case.truth.diameter_mm, case.truth.density)
+    return F.management([f.diameter_mm for f in case.ai]) == F.category(case.truth.diameter_mm, case.truth.density)
 
 
 def size_bin(mm: float) -> str:
@@ -108,4 +109,5 @@ def metrics(cases: list[Case]) -> dict:
             "worst": round(max(size_err, key=abs), 2) if size_err else None,
         },
         "tp_wrong_followup_category": sum(o == TP and not management_ok(c) for c, o in pos),
+        "tp_with_extra_findings": sum(o == TP and len(c.ai) > 1 for c, o in pos),
     }

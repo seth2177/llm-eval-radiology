@@ -20,13 +20,18 @@ Error codes
   FOLLOWUP_MISSING      no follow-up recommendation for a nodule
   FOLLOWUP_UNWARRANTED  imaging follow-up recommended in a report with no nodule
   UNPARSEABLE           the checker could not tell what the report says
-  OUT_OF_SCOPE          more than one detector finding (Fleischner's multiple-nodule table
-                        is not implemented, so these are not scored)
+  OUT_OF_SCOPE          more than MAX_FINDINGS detector findings (not scored)
+
+With more than one detector finding, each nodule in the report is matched to a finding
+(see _match) and follow-up is scored once for the study, against Fleischner's
+multiple-nodule table. If two readings of which sentence describes which nodule lead to
+different errors, the report is UNPARSEABLE.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from itertools import permutations
 
 from . import fleischner as F
 from .cases import AIFinding
@@ -38,10 +43,19 @@ UNPARSEABLE, OUT_OF_SCOPE = "UNPARSEABLE", "OUT_OF_SCOPE"
 OTHER_INTERVAL = "other_interval"      # a follow-up interval that is not a Fleischner category
 
 SIZE_TOLERANCE_MM = 0.5
+MAX_FINDINGS = 6          # more detector findings than this: not scored
+MAX_CLAIMS = 8            # more nodules than this in one report: UNPARSEABLE
 
 # A period ends a sentence unless it is a decimal point (6.3 mm).
 _SENTENCE = re.compile(r"(?<!\d)\.(?!\d)|\.(?=\s)|[;\n•]")
 _NODULE = re.compile(r"\b(?:micro)?nodul(?:e|es|ar)\b")
+# A plural reference to nodules described elsewhere ("for multiple nodules, CT in 3-6 months"). Only counts
+# when the sentence has no side and no size; otherwise it is read as a claim like any other.
+_NODULE_REF = re.compile(r"\b(?:multiple|both|these|the|all)\s+(?:(?:solid|pulmonary|lung|small|noncalcified)\s+)*"
+                         r"nodules\b")
+_PLURAL = re.compile(r"\b(?:micro)?nodules\b")
+_AND = re.compile(r",?\s+and\s+")
+_NODE = re.compile(r"\b(?:lymph|nodes?)\b")
 # "no / without / negative for ... nodule(s)". Not "no more than", "no doubt", "no change" (a comparison).
 _NEGATED = re.compile(r"\b(?:no(?!\s+(?:more|less|doubt|change|significant|interval)\b)|without|negative\s+for)\b"
                       r"(?:\s+[\w-]+){0,3}?\s+(?:pulmonary\s+)?nodul(?:e|es)\b")
@@ -150,6 +164,8 @@ def _followups(s: str) -> tuple[set[str], set[str]]:
             cat = THEN_18_24                   # valid only after a 6-12 month scan; check() decides
         elif month and a == 3 and b is None:
             cat = F.CT_3_PET
+        elif month and a == 3 and b == "6":
+            cat = F.CT_3_6                     # the multiple-nodule interval; wrong for a single nodule
         else:
             cat = OTHER_INTERVAL
         hits.append((cat, m.start(), m.end()))
@@ -169,9 +185,18 @@ def _followups(s: str) -> tuple[set[str], set[str]]:
     return found, negated
 
 
+def _split_and(s: str) -> list[str]:
+    """ "a 6 mm right lung nodule and a 12 mm left lung nodule" is two sentences, but only when every
+    piece names exactly one nodule; anything else ("right and left nodules, 6 and 12 mm") stays whole."""
+    pieces = _AND.split(s)
+    if len(pieces) > 1 and all(len(_NODULE.findall(_NEGATED.sub(" ", p))) == 1 for p in pieces):
+        return pieces
+    return [s]
+
+
 def read(text: str) -> Reading:
     t = _normalize(text)
-    sentences = [s.strip() for s in _SENTENCE.split(t) if s and s.strip()]
+    sentences = [p.strip() for s in _SENTENCE.split(t) if s and s.strip() for p in _split_and(s.strip())]
     claims: list[Claim] = []
     orphan, orphan_neg, why = set(), set(), []
     negative = False
@@ -187,7 +212,18 @@ def read(text: str) -> Reading:
         if _NODULE.search(positive_part) and _OTHER_ORGAN.search(positive_part):
             why.append(f"a nodule outside the lung: '{s}'")
             continue
+        has_side, has_size = bool(_SIDE.search(positive_part)), bool(_SIZE.search(positive_part))
+        if (_NODULE.search(positive_part) and not _NODULE.search(_NODULE_REF.sub(" ", positive_part))
+                and not has_side and not has_size):
+            positive_part = _NODULE_REF.sub(" ", positive_part)    # "these nodules": a reference, not a claim
+        elif not _NODULE.search(positive_part) and not _NODE.search(positive_part) and not (
+                claims and claims[-1].size_mm is None and _SIZE_ONLY.match(positive_part)):
+            loose: list[str] = []
+            if _sizes(positive_part, loose) or loose:     # "left lung 12 mm", "another 7 mm": whose size?
+                why.append(f"a size with no nodule named: '{s}'")
         if _NODULE.search(positive_part):
+            if _PLURAL.search(positive_part):
+                why.append(f"more than one nodule in one sentence: '{s}'")
             sides = set(_SIDE.findall(positive_part))
             sizes = sorted(set(round(x, 1) for x in _sizes(positive_part, why)))
             if len(sides) > 1 or "bilateral" in sides:
@@ -220,9 +256,23 @@ class Verdict:
         return not self.errors
 
 
+def _followup_errors(fu: set[str], negated: set[str], expected: str) -> list[str]:
+    fu, negated = set(fu), set(negated)
+    if THEN_18_24 in fu:                          # "then 18-24 months" only counts after a 6-12 or 3-6 month scan
+        fu = (fu - {THEN_18_24}) | (set() if fu & {F.CT_6_12, F.CT_3_6} else {OTHER_INTERVAL})
+    negated.discard(THEN_18_24)
+    if expected in negated:
+        return [FOLLOWUP_WRONG]                   # "PET/CT is not indicated" for a 13 mm nodule
+    if not fu:
+        return [FOLLOWUP_MISSING]
+    if fu != {expected}:
+        return [FOLLOWUP_WRONG]                   # wrong category, an unlisted interval, or a hedge naming two
+    return []
+
+
 def check(text: str, findings: list[AIFinding]) -> Verdict:
     r = read(text)
-    if len(findings) > 1:
+    if len(findings) > MAX_FINDINGS:
         return Verdict([OUT_OF_SCOPE], r)
     if r.ambiguous or (not r.claims and not r.negative_statement) or any(c.side is None for c in r.claims):
         return Verdict([UNPARSEABLE], r)
@@ -234,6 +284,8 @@ def check(text: str, findings: list[AIFinding]) -> Verdict:
         elif r.orphan_followups - {F.NONE}:
             errors.append(FOLLOWUP_UNWARRANTED)   # includes "repeat CT is advised" with no interval
         return Verdict(errors, r)
+    if len(findings) > 1:
+        return _check_multiple(r, findings)
 
     f = findings[0]
     size = round(f.diameter_mm, 1)                 # the value the LLM was shown
@@ -251,19 +303,67 @@ def check(text: str, findings: list[AIFinding]) -> Verdict:
     elif abs(c.size_mm - size) > SIZE_TOLERANCE_MM + 1e-9:
         errors.append(SIZE)
 
-    expected = F.category(size)
-    fu = c.followups | r.orphan_followups
-    negated = c.negated_followups | r.orphan_negated
-    if THEN_18_24 in fu:                          # "then 18-24 months" only counts after a 6-12 month scan
-        fu = (fu - {THEN_18_24}) | (set() if F.CT_6_12 in fu else {OTHER_INTERVAL})
-    negated.discard(THEN_18_24)
-    if expected in negated:
-        errors.append(FOLLOWUP_WRONG)             # "PET/CT is not indicated" for a 13 mm nodule
-    elif not fu:
-        errors.append(FOLLOWUP_MISSING)
-    elif fu != {expected}:
-        errors.append(FOLLOWUP_WRONG)             # wrong category, an unlisted interval, or a hedge naming two
-
+    errors += _followup_errors(c.followups | r.orphan_followups, c.negated_followups | r.orphan_negated,
+                               F.category(size))
     if len(r.claims) > 1:
         errors.append(HALLUCINATION)
     return Verdict(sorted(set(errors)), r)
+
+
+def _size_ok(c: Claim, size: float) -> bool:
+    return c.size_mm is not None and abs(c.size_mm - size) <= SIZE_TOLERANCE_MM + 1e-9
+
+
+def _match(findings: list[tuple[str, float]], claims: list[Claim]) -> set[frozenset[str]]:
+    """Which sentence describes which finding. Every way of pairing as many findings with claims as possible
+    is tried; the best pairing has the most exact pairs (side and size), then the most size matches, then the
+    most side matches. A matching size outranks a matching side: two nodules on one side are common, two
+    within 0.5 mm of each other are not. Returns the error sets of all equally good pairings; more than one
+    means the report can be read two ways."""
+    n, m = len(findings), len(claims)
+    k = min(n, m)
+    best, sets = None, set()
+    for chosen in permutations(range(m), n) if m >= n else permutations(range(n), m):
+        pairs = list(zip(range(n), chosen, strict=False)) if m >= n else list(zip(chosen, range(m), strict=False))
+        errs, exact, size_ok, same_side = set(), 0, 0, 0
+        for fi, ci in pairs[:k]:
+            side, size = findings[fi]
+            c = claims[ci]
+            ok_side, ok_size = c.side == side, _size_ok(c, size)
+            exact += ok_side and ok_size
+            size_ok += ok_size
+            same_side += ok_side
+            if not ok_side:
+                errs.add(LATERALITY)
+            if c.size_mm is None:
+                errs.add(SIZE_MISSING)
+            elif not ok_size:
+                errs.add(SIZE)
+        if n > m:
+            errs.add(OMISSION)
+        if m > n:
+            errs.add(HALLUCINATION)
+        rank = (exact, size_ok, same_side)
+        if best is None or rank > best:
+            best, sets = rank, {frozenset(errs)}
+        elif rank == best:
+            sets.add(frozenset(errs))
+    return sets
+
+
+def _check_multiple(r: Reading, findings: list[AIFinding]) -> Verdict:
+    if not r.claims:
+        return Verdict([OMISSION], r)
+    if len(r.claims) > MAX_CLAIMS:
+        return Verdict([UNPARSEABLE], r)
+    shown = [(f.laterality, round(f.diameter_mm, 1)) for f in findings]      # the values the LLM was shown
+    readings = _match(shown, r.claims)
+    if len(readings) != 1:
+        r.ambiguous.append("the nodules in the report can be matched to the findings in more than one way")
+        return Verdict([UNPARSEABLE], r)
+    errors = set(next(iter(readings)))
+    # one recommendation for the study, wherever in the report it was written
+    fu = set().union(r.orphan_followups, *(c.followups for c in r.claims))
+    negated = set().union(r.orphan_negated, *(c.negated_followups for c in r.claims))
+    errors.update(_followup_errors(fu, negated, F.multiple_category([s for _, s in shown])))
+    return Verdict(sorted(errors), r)

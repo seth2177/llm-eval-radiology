@@ -24,6 +24,20 @@ def test_solid_boundaries_round_to_nearest_mm(mm, expected):
     assert F.category(mm) == expected
 
 
+@pytest.mark.parametrize("sizes,expected", [
+    ([5.4, 3.0], F.NONE), ([5.5, 3.0], F.CT_3_6), ([7.0, 4.2], F.CT_3_6), ([12.4, 6.3], F.CT_3_6),
+    ([3.0, 4.0, 5.0], F.NONE),
+])
+def test_multiple_nodules_are_managed_by_the_largest(sizes, expected):
+    assert F.multiple_category(sizes) == expected
+    assert F.management(sizes) == expected
+
+
+def test_management_picks_the_table():
+    assert F.management([]) is None
+    assert F.management([6.3]) == F.CT_6_12 and F.management([12.4]) == F.CT_3_PET
+
+
 def test_ground_glass():
     assert F.category(5.0, "ground-glass") == F.NONE
     assert F.category(14.0, "ground-glass") == F.CT_6_12
@@ -143,7 +157,8 @@ def test_cli_run_and_selftest(tmp_path, capsys):
     assert sum(s["attribution"].values()) == s["population"]["scored_in_this_run"]
     assert "Who caused the wrong reports" in (tmp_path / "report.md").read_text()
     assert main(["selftest", "--data", str(DATA)]) == 0
-    assert "SELFTEST PASS" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "SELFTEST PASS" in out and "multi-nodule 57/57" in out
 
 
 def test_openai_body_suits_reasoning_models():
@@ -168,6 +183,30 @@ def test_right_side_wrong_management_is_a_detector_error():
     c = _case(Nodule("right", 5.0), [AIFinding("right", 6.3, 0.9)])
     assert D.outcome(c) == D.TP and not D.management_ok(c) and not detector_right(c)
     assert _attribution(c, []) == DETECTOR_FAULT
+
+
+def test_an_extra_finding_is_a_detector_error():
+    """Truth has one nodule; the detector found it and invented a second. The report will carry the invented one,
+    and the multiple-nodule table changes the follow-up."""
+    from llm_eval.run import DETECTOR_FAULT, REPORT_RIGHT, _attribution, detector_right
+    one = _case(Nodule("right", 7.0), [AIFinding("right", 7.0, 0.9)])
+    two = _case(Nodule("right", 7.0), [AIFinding("right", 7.0, 0.9), AIFinding("left", 4.0, 0.6)])
+    assert detector_right(one) and _attribution(one, []) == REPORT_RIGHT
+    assert D.outcome(two) == D.TP and not D.management_ok(two) and not detector_right(two)
+    assert _attribution(two, []) == DETECTOR_FAULT
+    small = _case(Nodule("right", 4.0), [AIFinding("right", 4.0, 0.9), AIFinding("left", 3.0, 0.6)])
+    assert D.management_ok(small) and not detector_right(small)      # same follow-up, still an invented nodule
+
+
+def test_scripted_multi_nodule_reports_are_reproducible_and_planted():
+    from llm_eval.synthetic import multi_nodule_variants
+    multi = multi_nodule_variants(load(DATA / "results", DATA / "truth"))
+    assert multi and all(len(c.ai) > 1 and c.study_uid.endswith(".multi") for c in multi)
+    assert {F.multiple_category([f.diameter_mm for f in c.ai]) for c in multi} == {F.NONE, F.CT_3_6}
+    a, b = ScriptedModel(1.0, seed=5), ScriptedModel(1.0, seed=5)
+    assert [a.generate(c.ai, c.study_uid) for c in multi] == [b.generate(c.ai, c.study_uid) for c in multi]
+    assert set(a.planted.values()) == {"HALLUCINATION", "OMISSION", "LATERALITY", "SIZE", "FOLLOWUP_WRONG",
+                                       "FOLLOWUP_MISSING"}
 
 
 class _Flaky(ScriptedModel):

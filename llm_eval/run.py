@@ -47,9 +47,9 @@ class CaseResult:
 
 
 def detector_right(case: Case) -> bool:
-    """Right side AND a size that keeps the patient in the correct follow-up category."""
+    """Right side, no extra findings, AND a size that keeps the patient in the correct follow-up category."""
     o = D.outcome(case)
-    return o == D.TN or (o == D.TP and D.management_ok(case))
+    return o == D.TN or (o == D.TP and len(case.ai) == 1 and D.management_ok(case))
 
 
 def _attribution(case: Case, errors: list[str]) -> str:

@@ -126,8 +126,104 @@ def test_follow_up_attaches_to_the_nodule_it_follows():
     assert r.claims[1].followups == {"ct_3_months_pet_or_sampling"}
 
 
-def test_multiple_findings_are_out_of_scope():
-    """Fleischner 2017 manages multiple nodules with a separate table (by the most suspicious one),
-    which is not implemented. Scoring them with the single-nodule table would be clinically wrong."""
-    two = [AIFinding("right", 6.3, 0.9), AIFinding("left", 12.4, 0.9)]
-    assert check("Right lung nodule, 6 mm. Left lung nodule, 12 mm. Consider PET/CT.", two).errors == ["OUT_OF_SCOPE"]
+# --- more than one detector finding: Fleischner's multiple-nodule table, scored per nodule ---------------
+
+R6L12 = [AIFinding("right", 6.3, 0.9), AIFinding("left", 12.4, 0.9)]      # largest > 8 mm: CT in 3-6 months
+RR = [AIFinding("right", 4.2, 0.8), AIFinding("right", 7.0, 0.9)]          # two on one side
+SMALL = [AIFinding("right", 3.1, 0.7), AIFinding("left", 4.4, 0.8)]        # all < 6 mm: no routine follow-up
+EDGE = [AIFinding("right", 5.5, 0.8), AIFinding("left", 3.0, 0.7)]         # 5.5 rounds to 6: CT in 3-6 months
+
+MULTI = [
+    # faithful
+    (R6L12, "Right lung nodule, 6 mm. Left lung nodule, 12 mm. Recommend CT in 3-6 months, then consider CT at "
+            "18-24 months.", []),
+    (R6L12, "A 6 mm right lung nodule and a 12 mm left lung nodule. Follow-up CT in 3 to 6 months.", []),
+    (R6L12, "Multiple pulmonary nodules. Right lung nodule, 6.3 mm. Left lower lobe nodule, 1.2 cm. CT in 3-6 months.",
+     []),
+    (R6L12, "Left lung nodule 12 mm. Right lung nodule 6 mm. For multiple nodules, CT in three to six months.", []),
+    (R6L12, "Right lung nodule 6 mm. Left lung nodule 12 mm. CT in 3-6 months; PET/CT is not needed.", []),
+    (RR, "Right upper lobe nodule, 7 mm. Right lower lobe nodule, 4 mm. CT in 3-6 months.", []),
+    (SMALL, "Right lung nodule 3 mm. Left lung nodule 4 mm. No routine follow-up is recommended.", []),
+    (SMALL, "Right lung nodule 3 mm. Left lung nodule 4.4 mm. No follow-up needed for these nodules.", []),
+    (EDGE, "Right lung nodule 5.5 mm. Left lung nodule 3 mm. CT in 3-6 months.", []),
+    # the single-nodule table applied to multiple nodules is the classic mistake
+    (R6L12, "Right lung nodule, 6 mm. Left lung nodule, 12 mm. Consider PET/CT.", ["FOLLOWUP_WRONG"]),
+    (R6L12, "Right lung nodule, 6 mm. Left lung nodule, 12 mm. Consider CT in 3 months, PET/CT, or tissue sampling.",
+     ["FOLLOWUP_WRONG"]),
+    (RR, "Right lung nodule, 7 mm. Right lung nodule, 4 mm. Follow-up CT in 6-12 months.", ["FOLLOWUP_WRONG"]),
+    (SMALL, "Right lung nodule 3 mm. Left lung nodule 4 mm. Recommend CT in 3-6 months.", ["FOLLOWUP_WRONG"]),
+    (EDGE, "Right lung nodule 5.5 mm. Left lung nodule 3 mm. No routine follow-up is recommended.", ["FOLLOWUP_WRONG"]),
+    (R6L12, "Right lung nodule 6 mm. Left lung nodule 12 mm. Follow-up CT in 3-6 months is not required.",
+     ["FOLLOWUP_WRONG"]),
+    (R6L12, "Right lung nodule 6 mm. Left lung nodule 12 mm. CT in 6-12 months, then 18-24 months.",
+     ["FOLLOWUP_WRONG"]),
+    (R6L12, "Right lung nodule 6 mm. Left lung nodule 12 mm. CT in 18-24 months.", ["FOLLOWUP_WRONG"]),
+    (R6L12, "Right lung nodule, 6 mm. Left lung nodule, 12 mm.", ["FOLLOWUP_MISSING"]),
+    # per-nodule errors
+    (R6L12, "Left lung nodule, 6 mm. Right lung nodule, 12 mm. CT in 3-6 months.", ["LATERALITY"]),      # swapped
+    (R6L12, "Right lung nodule 6 mm. Right lung nodule 12 mm. CT in 3-6 months.", ["LATERALITY"]),
+    (RR, "Right lung nodule, 7 mm. Left lung nodule, 4 mm. CT in 3-6 months.", ["LATERALITY"]),
+    (R6L12, "Right lung nodule 9 mm. Left lung nodule 12 mm. CT in 3-6 months.", ["SIZE"]),
+    (RR, "Right lung nodule, 7 mm. Right lung nodule, 7 mm. CT in 3-6 months.", ["SIZE"]),
+    (R6L12, "Right lung nodule. Left lung nodule, 12 mm. CT in 3-6 months.", ["SIZE_MISSING"]),
+    (R6L12, "Right lung nodule, 6 mm. CT in 3-6 months.", ["OMISSION"]),
+    (R6L12, "No pulmonary nodule identified.", ["OMISSION"]),
+    (R6L12, "Right lung nodule 6 mm. Left lung nodule 12 mm. Additional 4 mm right lung nodule. CT in 3-6 months.",
+     ["HALLUCINATION"]),
+    (R6L12, "Left lung nodule, 12 mm. CT in 3 months.", ["FOLLOWUP_WRONG", "OMISSION"]),
+    # can't be read one way only: never guessed
+    (R6L12, "Bilateral pulmonary nodules, largest 12 mm. CT in 3-6 months.", ["UNPARSEABLE"]),
+    (R6L12, "Right and left lung nodules measuring 6 and 12 mm. CT in 3-6 months.", ["UNPARSEABLE"]),
+    (R6L12, "Right 6 mm and left 12 mm lung nodules. CT in 3-6 months.", ["UNPARSEABLE"]),
+    (R6L12, "Two pulmonary nodules: right lung 6 mm; left lung 12 mm. CT in 3-6 months.", ["UNPARSEABLE"]),
+    (R6L12, "Right lung nodule 6 mm. Left lung nodule 12 mm. The largest nodule warrants CT in 3-6 months.",
+     ["UNPARSEABLE"]),
+    (R6L12, "Stable right lung nodule 6 mm. Left lung nodule 12 mm. CT in 3-6 months.", ["UNPARSEABLE"]),
+    (RR, "Two right lung nodules measuring 4 mm and 7 mm. CT in 3-6 months.", ["UNPARSEABLE"]),
+    (R6L12, "Multiple pulmonary nodules. CT in 3-6 months.", ["UNPARSEABLE"]),
+    # found by hand while building this: each used to be a false alarm (OMISSION or HALLUCINATION)
+    (RR, "Right lung nodules measuring 4 and 7 mm. CT in 3-6 months.", ["UNPARSEABLE"]),
+    (RR, "Right lung nodule 4 mm. Another 7 mm. CT in 3-6 months.", ["UNPARSEABLE"]),
+    (R6L12, "Multiple pulmonary nodules, the largest in the left lung. Right lung nodule 6 mm. Left lung nodule 12 mm. "
+            "CT in 3-6 months.", ["UNPARSEABLE"]),
+    (R6L12, "Right lung nodule 6 mm. Left lung nodule 12 mm and several smaller nodules. CT in 3-6 months.",
+     ["UNPARSEABLE"]),
+    (RR, "Right lung nodule. 4 mm. Right lung nodule, 7 mm. CT in 3-6 months.", []),
+    (R6L12, "1. Right lung nodule, 6 mm.\n2. Left lung nodule, 12 mm.\n3. CT in 3-6 months.", []),
+    (R6L12, "Right lung nodule 6 mm; left lung nodule 12 mm; CT in 3-6 months.", []),
+    (R6L12, "Right lung nodule 6 mm. Left lung nodule 12 mm. CT in 3-6 months or PET/CT.", ["FOLLOWUP_WRONG"]),
+    # two readings, two different verdicts (the 9 mm one is wrong-sized, or the size-less one is unsized)
+    (R6L12, "Right lung nodule. Right lung nodule, 9 mm. Left lung nodule, 12 mm. CT in 3-6 months.", ["UNPARSEABLE"]),
+]
+
+
+@pytest.mark.parametrize("findings,text,expected", MULTI, ids=[c[1][:40] for c in MULTI])
+def test_checker_multiple(findings, text, expected):
+    assert check(text, findings).errors == expected
+
+
+@pytest.mark.parametrize("findings,text,expected", [
+    # "and" splits a sentence only when each piece names one nodule
+    (R6, "Right lung nodule 6 mm and no other nodules. CT in 6-12 months.", []),
+    # (the follow-up attaches to the last nodule named, here the invented one; the report is flagged either way)
+    (R6, "A 6 mm right lung nodule and a 4 mm left lung nodule. CT in 6-12 months.",
+     ["FOLLOWUP_MISSING", "HALLUCINATION"]),
+    # a side and a size with no nodule named is not dropped silently
+    (R6, "Right lung nodule, 6 mm. Left lung 12 mm. CT in 6-12 months.", ["UNPARSEABLE"]),
+    (R6, "Right lung nodule, 6 mm. Right hilar lymph node 10 mm. CT in 6-12 months.", []),
+    # the multiple-nodule interval is wrong for a single nodule, with or without the 18-24 month scan
+    (R6, "Right lung nodule 6 mm. CT in 3-6 months, then consider CT at 18-24 months.", ["FOLLOWUP_WRONG"]),
+    (R6, "Right lung nodule 6 mm. For these nodules, CT in 6-12 months.", []),
+], ids=lambda x: x[:40] if isinstance(x, str) else None)
+def test_checker_changes_that_also_touch_single_nodules(findings, text, expected):
+    assert check(text, findings).errors == expected
+
+
+def test_follow_up_counts_once_for_the_study_wherever_it_is_written():
+    r = check("Right lung nodule, 6 mm, CT in 3-6 months. Left lung nodule, 12 mm.", R6L12)
+    assert r.errors == [] and r.reading.claims[0].followups == {"ct_3_6_months"}
+
+
+def test_too_many_findings_are_out_of_scope():
+    seven = [AIFinding("right" if i % 2 else "left", 3.0 + 1.5 * i, 0.9) for i in range(7)]
+    assert check("Multiple pulmonary nodules.", seven).errors == ["OUT_OF_SCOPE"]

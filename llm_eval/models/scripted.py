@@ -48,6 +48,29 @@ WRONG_FOLLOWUP_EXTRA = {
 }
 NEGATIVE = ("No pulmonary nodule identified.", "No pulmonary nodules.", "No suspicious pulmonary nodule is seen.")
 
+# More than one finding: one sentence per nodule (or two joined by "and"), then one recommendation for the study.
+MULTI_FINDING_TEMPLATES = (FINDING_TEMPLATES[0], FINDING_TEMPLATES[1], FINDING_TEMPLATES[3],
+    "{Side} lung nodule, {size} mm.",
+    "A {size} mm nodule is also present in the {side} lung.",
+)
+MULTI_JOINED = "A {size} mm {side} lung nodule and a {size2} mm {side2} lung nodule."
+MULTI_OPENERS = ("", "", "Multiple pulmonary nodules. ", "Multiple solid pulmonary nodules. ")
+MULTI_FOLLOWUP_TEMPLATES = {
+    F.NONE: ("No routine follow-up is recommended.", "No routine follow-up needed per Fleischner 2017 for multiple "
+             "nodules.", "Follow-up imaging is not required for these nodules."),
+    F.CT_3_6: ("Recommend CT in 3-6 months, then consider CT at 18-24 months.",
+               "For multiple nodules, follow-up CT at 3 to 6 months is recommended.",
+               "Follow-up chest CT in 3-6 months per Fleischner 2017 for multiple solid nodules; PET/CT is not needed.",
+               "Recommend CT in three to six months."),
+}
+# Wrong on purpose. Includes the single-nodule recommendation for the largest nodule, the classic mistake.
+MULTI_WRONG_FOLLOWUP = {
+    F.NONE: ("Recommend CT in 3-6 months.", "Recommend CT in 6 months.", "Recommend follow-up CT in 6-12 months."),
+    F.CT_3_6: ("Follow-up CT in 3-6 months is not required.", "Recommend follow-up CT in 6-12 months.",
+               "Consider CT in 3 months, PET/CT, or tissue sampling.", "No routine follow-up is recommended.",
+               "Recommend follow-up CT in 12 months."),
+}
+
 
 def _fmt(mm: float) -> str:
     return f"{mm:.1f}".rstrip("0").rstrip(".")
@@ -75,6 +98,8 @@ class ScriptedModel(ImpressionModel):
         error = self._choose(r, positive=bool(findings))
         self.planted[case_id] = error
 
+        if len(findings) > 1:
+            return self._multiple(r, findings, error)
         if not findings:
             if error == HALLUCINATION:
                 side, size = r.choice(["right", "left"]), r.choice([5.0, 7.0, 11.0])
@@ -103,6 +128,44 @@ class ScriptedModel(ImpressionModel):
                 extra = r.choice([4.0, 7.0, 12.0])
                 parts.append(self._finding(r, other, extra, F.category(extra)))
         return " ".join(parts)
+
+    def _multiple(self, r: random.Random, findings: list[AIFinding], error: str | None) -> str:
+        """One planted error at most, in exactly one nodule (or in the study's recommendation). A changed size
+        or side never lands within tolerance of another finding, so the planted report is never equivalent to
+        a correct one."""
+        nodules = [(f.laterality, round(f.diameter_mm, 1)) for f in findings]
+        shown = [s for _, s in nodules]
+        i = r.randrange(len(nodules))
+        if error == OMISSION:
+            del nodules[i]
+        elif error == LATERALITY:
+            side, size = nodules[i]
+            nodules[i] = ("left" if side == "right" else "right", size)
+        elif error == SIZE:
+            side, size = nodules[i]
+            # includes sizes just past the tolerance, as for a single nodule
+            options = [size + d * k for d in (0.6, 1.0, 3.0, 5.0) for k in (-1, 1)]
+            nodules[i] = (side, r.choice([x for x in options if x > 1 and all(abs(x - y) > 0.55 for y in shown)]))
+        elif error == HALLUCINATION:
+            extra = r.choice([x for x in (3.0, 4.0, 7.0, 10.0, 12.0, 15.0) if all(abs(x - y) > 1.0 for y in shown)])
+            nodules.insert(r.randrange(len(nodules) + 1), (r.choice(["right", "left"]), extra))
+
+        cat = F.multiple_category(shown)
+        if error == FOLLOWUP_MISSING:
+            followup = ""
+        elif error == FOLLOWUP_WRONG:
+            followup = r.choice(MULTI_WRONG_FOLLOWUP[cat])
+        else:
+            followup = r.choice(MULTI_FOLLOWUP_TEMPLATES[cat])
+
+        text = r.choice(MULTI_OPENERS)
+        if len(nodules) == 2 and r.random() < 0.3:
+            (side, size), (side2, size2) = nodules
+            text += MULTI_JOINED.format(side=side, size=_fmt(size), side2=side2, size2=_fmt(size2))
+        else:
+            text += " ".join(r.choice(MULTI_FINDING_TEMPLATES).format(side=side, Side=side.capitalize(),
+                                                                      size=_fmt(size)) for side, size in nodules)
+        return f"{text} {followup}".strip()
 
     def _finding(self, r: random.Random, side: str, size: float, cat: str | None) -> str:
         s = r.choice(FINDING_TEMPLATES).format(side=side, Side=side.capitalize(), size=_fmt(size))
