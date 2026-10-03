@@ -12,7 +12,7 @@ report to the layer that caused it.
 flowchart LR
     T["ground truth<br/>(synthetic scanner)"] --> L1
     R["dicom-ai-router<br/>results/*.json"] --> L1["Layer 1<br/>detector vs truth"]
-    R --> P["prompt<br/>(findings only, no PHI)"] --> M["LLM<br/>Claude / OpenAI / Ollama"] --> I["impression text"]
+    R --> P["prompt<br/>(findings only, no PHI)"] --> M["LLM<br/>Claude / Bedrock / OpenAI / Ollama<br/>or replayed batch output"] --> I["impression text"]
     I --> L2["Layer 2<br/>checker: impression vs findings"]
     R --> L2
     L1 --> A["attribution:<br/>who caused the wrong report"]
@@ -56,6 +56,36 @@ python -m llm_eval run --data examples/router-150 --model openai --model-name <m
 python -m llm_eval run --data examples/router-150 --model ollama --model-name <name from `ollama list`> --out out/local
 ```
 
+**Amazon Bedrock** goes through the Converse API. Authenticate with a Bedrock API key, or with your normal AWS
+credentials (`AWS_PROFILE`, SSO, access keys, an instance role), which needs botocore for request signing:
+
+```bash
+export AWS_BEARER_TOKEN_BEDROCK=...           # a Bedrock API key; or instead:
+pip install "llm-eval-radiology[bedrock]"     # and use AWS_PROFILE / your usual AWS credentials
+python -m llm_eval run --data examples/router-150 --model bedrock --region us-west-2 --out out/bedrock
+```
+
+The region comes from `--region`, then `AWS_REGION`, else `us-east-1`. The default model is
+`us.anthropic.claude-sonnet-4-6`, the US cross-region inference profile for Claude Sonnet 4.6; pass any other
+model or inference-profile ID your account can use with `--model-name`. The model must be enabled in your
+account and region. Some newer models reject a temperature; set `LLM_EVAL_BEDROCK_TEMPERATURE=default` to
+leave it out.
+
+**Impressions made somewhere else** (a batch job, another tool, a model behind a gateway this repo doesn't
+talk to): write out the exact prompts, run them however you like, and score the answers.
+
+```bash
+python -m llm_eval prompts --data examples/router-150 --out prompts.jsonl
+#   one line per study: {"uid", "prompt_version", "system", "user"}
+#   ...run them elsewhere, write one line per study: {"uid": ..., "impression": ..., "model": "<optional>"}
+python -m llm_eval run --data examples/router-150 --model replay --impressions impressions.jsonl --out out/batch
+```
+
+The uid is only the join key; it is not in the prompt text. If the system you send prompts to shouldn't see
+StudyInstanceUIDs, swap them for row numbers on the way out and back. A study with no line in the impressions
+file is recorded as `MODEL_ERROR` and the rest are scored. Add `"prompt_version"` to each line (copy it from
+the prompts file) and it is recorded with the run.
+
 Each run writes `report.md` (the readable summary), `metrics.json` and `cases.jsonl` (every impression with its
 verdict, for review). Point `--data` at any dicom-ai-router workdir to score a fresh run.
 
@@ -65,6 +95,8 @@ verdict, for review). Point `--data` at any dicom-ai-router workdir to score a f
 density and Fleischner size band, wrong-side detections, and size error on true positives.
 
 **Layer 2, impression vs detector findings.** Does the report say what the detector said, and only that?
+When the detector reports several nodules, each one is checked and the follow-up is checked once for the study,
+against Fleischner's multiple-nodule table.
 
 | Error | Meaning |
 |---|---|
@@ -140,13 +172,15 @@ real ones.
 
 - **Only de-identified finding fields go to the LLM**: side, size and confidence. No UIDs, names, dates or
   accession numbers, so a hosted model needs no PHI. A test enforces it.
-- **Plain httpx adapters**, no vendor SDKs. Each accepts a mock transport, so the exact request shape is tested
+- **Plain httpx adapters**, no vendor SDKs (Bedrock uses botocore only to sign requests, and not at all with
+  an API key). Each accepts a mock transport, so the exact request shape is tested
   without the network. Request errors (4xx) fail at once; timeouts, rate limits and server errors (408, 429,
   5xx) back off and retry. One failed case is recorded as `MODEL_ERROR` and the run carries on, and every
   result is written to `cases.jsonl` as it lands, so an interrupted paid run keeps what it finished.
-- **A versioned prompt** (`PROMPT_VERSION`) and the temperature are recorded with every run. Temperature is 0
-  for Claude and Ollama. For OpenAI it is left at the default unless `LLM_EVAL_OPENAI_TEMPERATURE` is set,
-  because reasoning models reject any other value.
+- **A versioned prompt** (`PROMPT_VERSION`), the temperature and, for Bedrock, the region are recorded with
+  every run. Temperature is 0 for Claude, Bedrock and Ollama. For OpenAI it is left at the default unless
+  `LLM_EVAL_OPENAI_TEMPERATURE` is set, because reasoning models reject any other value. A replayed run records
+  the model and prompt version its file reports, and no temperature.
 - **Fleischner 2017 in code** (`fleischner.py`), including the round-to-nearest-mm rule, with boundary tests.
 
 ## Limits
@@ -171,7 +205,7 @@ real ones.
 llm_eval/cases.py        load router results + ground truth
 llm_eval/detector.py     layer 1 metrics, Wilson intervals
 llm_eval/prompt.py       the impression prompt (versioned)
-llm_eval/models/         anthropic, openai, ollama adapters + the scripted model
+llm_eval/models/         anthropic, bedrock, openai, ollama adapters, replay, and the scripted model
 llm_eval/checker.py      layer 2: read the impression, compare with the findings
 llm_eval/fleischner.py   follow-up categories (single and multiple nodules)
 llm_eval/synthetic.py    multi-nodule variants for the checker self-test
