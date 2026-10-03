@@ -116,6 +116,34 @@ def test_anthropic_request():
     assert body["model"] == "claude-x" and body["system"] and body["messages"][0]["role"] == "user"
 
 
+def test_anthropic_defaults_suit_current_models(monkeypatch):
+    for v in ("LLM_EVAL_ANTHROPIC_MODEL", "LLM_EVAL_ANTHROPIC_TEMPERATURE", "LLM_EVAL_ANTHROPIC_EFFORT"):
+        monkeypatch.delenv(v, raising=False)
+    seen = []
+    reply = {"content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": "ok"}]}
+    m = AnthropicModel(api_key="k", client=_mock(seen, reply))
+    assert m.generate([], "c") == "ok"
+    body = json.loads(seen[0].content)
+    assert body["model"] == "claude-opus-5-5" and "temperature" not in body
+    assert body["output_config"] == {"effort": "low"} and body["max_tokens"] >= 4000
+
+
+def test_anthropic_temperature_and_effort_overrides(monkeypatch):
+    monkeypatch.setenv("LLM_EVAL_ANTHROPIC_TEMPERATURE", "0")
+    monkeypatch.setenv("LLM_EVAL_ANTHROPIC_EFFORT", "default")
+    seen = []
+    m = AnthropicModel(model="claude-sonnet-4-6", api_key="k", client=_mock(seen, {"content": []}))
+    m.generate([], "c")
+    body = json.loads(seen[0].content)
+    assert body["temperature"] == 0 and "output_config" not in body
+
+
+def test_anthropic_refusal_is_a_model_error():
+    m = AnthropicModel(model="x", api_key="k", client=_mock([], {"stop_reason": "refusal", "content": []}))
+    with pytest.raises(ModelError, match="refusal"):
+        m.generate([], "c")
+
+
 def test_openai_request():
     seen = []
     m = OpenAIModel(model="gpt-x", api_key="k", base_url="https://gw.example/v1",

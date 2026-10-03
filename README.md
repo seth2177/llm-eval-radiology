@@ -178,8 +178,10 @@ real ones.
   5xx) back off and retry. One failed case is recorded as `MODEL_ERROR` and the run carries on, and every
   result is written to `cases.jsonl` as it lands, so an interrupted paid run keeps what it finished.
 - **A versioned prompt** (`PROMPT_VERSION`), the temperature and, for Bedrock, the region are recorded with
-  every run. Temperature is 0 for Claude, Bedrock and Ollama. For OpenAI it is left at the default unless
-  `LLM_EVAL_OPENAI_TEMPERATURE` is set, because reasoning models reject any other value. A replayed run records
+  every run. Temperature is 0 for Bedrock and Ollama. Current Claude models (default `claude-opus-5-5`) and
+  OpenAI reasoning models reject a temperature, so for `anthropic` and `openai` it is sent only when
+  `LLM_EVAL_ANTHROPIC_TEMPERATURE` / `LLM_EVAL_OPENAI_TEMPERATURE` is set. Claude runs at effort `low`
+  (`LLM_EVAL_ANTHROPIC_EFFORT`); a refusal is recorded as `MODEL_ERROR`. A replayed run records
   the model and prompt version its file reports, and no temperature.
 - **Fleischner 2017 in code** (`fleischner.py`), including the round-to-nearest-mm rule, with boundary tests.
 
