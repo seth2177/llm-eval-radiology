@@ -1,6 +1,6 @@
 # llm-eval-radiology
 
-[![CI](https://github.com/seth2177/llm-eval-radiology/actions/workflows/ci.yml/badge.svg)](https://github.com/seth2177/llm-eval-radiology/actions/workflows/ci.yml)
+[![CI](https://github.com/seth2177/llm-eval-radiology/actions/workflows/ci.yml/badge.svg)](https://github.com/seth2177/llm-eval-radiology/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/llm-eval-radiology)](https://pypi.org/project/llm-eval-radiology/)
 
 **When an AI-drafted radiology report is wrong, was it the detector or the language model?**
 
@@ -12,7 +12,7 @@ report to the layer that caused it.
 flowchart LR
     T["ground truth<br/>(synthetic scanner)"] --> L1
     R["dicom-ai-router<br/>results/*.json"] --> L1["Layer 1<br/>detector vs truth"]
-    R --> P["prompt<br/>(findings only, no PHI)"] --> M["LLM<br/>Claude / OpenAI / Ollama"] --> I["impression text"]
+    R --> P["prompt<br/>(findings only, no PHI)"] --> M["LLM<br/>Claude / Bedrock / OpenAI / Ollama<br/>or replayed batch output"] --> I["impression text"]
     I --> L2["Layer 2<br/>checker: impression vs findings"]
     R --> L2
     L1 --> A["attribution:<br/>who caused the wrong report"]
@@ -35,6 +35,15 @@ python -m llm_eval selftest --data examples/router-150                  # prove 
 python -m llm_eval run --data examples/router-150 --model scripted --out out/scripted
 ```
 
+Or install it from PyPI and run the same thing from any folder. The 150 example studies ship inside the
+package, and `--data` defaults to them:
+
+```bash
+pip install llm-eval-radiology
+llm-eval-radiology selftest
+llm-eval-radiology run --model scripted --out out/scripted
+```
+
 Then with a real model (your key, your spend; `--limit` caps it):
 
 ```bash
@@ -47,6 +56,36 @@ python -m llm_eval run --data examples/router-150 --model openai --model-name <m
 python -m llm_eval run --data examples/router-150 --model ollama --model-name <name from `ollama list`> --out out/local
 ```
 
+**Amazon Bedrock** goes through the Converse API. Authenticate with a Bedrock API key, or with your normal AWS
+credentials (`AWS_PROFILE`, SSO, access keys, an instance role), which needs botocore for request signing:
+
+```bash
+export AWS_BEARER_TOKEN_BEDROCK=...           # a Bedrock API key; or instead:
+pip install "llm-eval-radiology[bedrock]"     # and use AWS_PROFILE / your usual AWS credentials
+python -m llm_eval run --data examples/router-150 --model bedrock --region us-west-2 --out out/bedrock
+```
+
+The region comes from `--region`, then `AWS_REGION`, else `us-east-1`. The default model is
+`us.anthropic.claude-sonnet-4-6`, the US cross-region inference profile for Claude Sonnet 4.6; pass any other
+model or inference-profile ID your account can use with `--model-name`. The model must be enabled in your
+account and region. Some newer models reject a temperature; set `LLM_EVAL_BEDROCK_TEMPERATURE=default` to
+leave it out.
+
+**Impressions made somewhere else** (a batch job, another tool, a model behind a gateway this repo doesn't
+talk to): write out the exact prompts, run them however you like, and score the answers.
+
+```bash
+python -m llm_eval prompts --data examples/router-150 --out prompts.jsonl
+#   one line per study: {"uid", "prompt_version", "system", "user"}
+#   ...run them elsewhere, write one line per study: {"uid": ..., "impression": ..., "model": "<optional>"}
+python -m llm_eval run --data examples/router-150 --model replay --impressions impressions.jsonl --out out/batch
+```
+
+The uid is only the join key; it is not in the prompt text. If the system you send prompts to shouldn't see
+StudyInstanceUIDs, swap them for row numbers on the way out and back. A study with no line in the impressions
+file is recorded as `MODEL_ERROR` and the rest are scored. Add `"prompt_version"` to each line (copy it from
+the prompts file) and it is recorded with the run.
+
 Each run writes `report.md` (the readable summary), `metrics.json` and `cases.jsonl` (every impression with its
 verdict, for review). Point `--data` at any dicom-ai-router workdir to score a fresh run.
 
@@ -56,6 +95,8 @@ verdict, for review). Point `--data` at any dicom-ai-router workdir to score a f
 density and Fleischner size band, wrong-side detections, and size error on true positives.
 
 **Layer 2, impression vs detector findings.** Does the report say what the detector said, and only that?
+When the detector reports several nodules, each one is checked and the follow-up is checked once for the study,
+against Fleischner's multiple-nodule table.
 
 | Error | Meaning |
 |---|---|
@@ -63,10 +104,10 @@ density and Fleischner size band, wrong-side detections, and size error on true 
 | `OMISSION` | a detector finding missing from the report |
 | `LATERALITY` | right and left swapped |
 | `SIZE` / `SIZE_MISSING` | size off by more than rounding (0.5 mm), or not given |
-| `FOLLOWUP_WRONG` / `FOLLOWUP_MISSING` | recommendation doesn't match Fleischner 2017 for the detector's size, or is absent |
+| `FOLLOWUP_WRONG` / `FOLLOWUP_MISSING` | recommendation doesn't match Fleischner 2017 for the detector's size (the multiple-nodule table when it reported more than one), or is absent |
 | `FOLLOWUP_UNWARRANTED` | imaging follow-up recommended when there is no nodule |
 | `UNPARSEABLE` | the checker can't tell what the report says, so a human reviews it |
-| `OUT_OF_SCOPE` | the detector reported more than one nodule (not scored, see Limits) |
+| `OUT_OF_SCOPE` | the detector reported more than six nodules (not scored) |
 
 **Attribution.** Crossing the two layers. The detector counts as right only when it found the nodule on the
 correct side at a size that keeps the patient in the correct Fleischner category (or correctly found nothing):
@@ -87,7 +128,9 @@ The checker is rule-based and deterministic, so every verdict traces to a line o
    negations like "no additional nodules" and negated alternatives like "PET/CT is not needed"), then plants
    exactly one known mistake per report, including size errors just past the 0.5 mm tolerance. `selftest`
    plants one in every report, then none, across three seeds. The checker has to find exactly what was
-   planted, with no false alarms, or CI fails.
+   planted, with no false alarms, or CI fails. The router data never has two detector findings on one study,
+   so `selftest` also runs 57 multi-nodule variants of it, where the planted mistakes include the
+   single-nodule recommendation applied to several nodules.
 2. **Real-world phrasing.** `tests/test_checker.py` holds impressions written the way radiologists and LLMs
    write them: `0.6 cm`, `6 by 7 mm`, `6,3 mm`, `RUL`, `6-12mo`, `six to twelve months`, numbered lists,
    "lungs are clear without pulmonary nodules."
@@ -98,7 +141,8 @@ The checker is rule-based and deterministic, so every verdict traces to a line o
    scan before it, and a thyroid nodule written up as if it were in the lung.
 
 When a report is ambiguous (two sides or two sizes in one sentence, "less than 6 mm," "stable" or "previously"
-with no prior study to compare against) the checker returns `UNPARSEABLE` for human review instead of guessing.
+with no prior study to compare against, or several nodules that can be matched to the detector's findings in
+two ways with different errors) the checker returns `UNPARSEABLE` for human review instead of guessing.
 That is a design rule, not a proof: a phrasing nobody has tested yet can still fool it, which is why every
 impression is kept in `cases.jsonl` for review.
 
@@ -128,13 +172,17 @@ real ones.
 
 - **Only de-identified finding fields go to the LLM**: side, size and confidence. No UIDs, names, dates or
   accession numbers, so a hosted model needs no PHI. A test enforces it.
-- **Plain httpx adapters**, no vendor SDKs. Each accepts a mock transport, so the exact request shape is tested
+- **Plain httpx adapters**, no vendor SDKs (Bedrock uses botocore only to sign requests, and not at all with
+  an API key). Each accepts a mock transport, so the exact request shape is tested
   without the network. Request errors (4xx) fail at once; timeouts, rate limits and server errors (408, 429,
   5xx) back off and retry. One failed case is recorded as `MODEL_ERROR` and the run carries on, and every
   result is written to `cases.jsonl` as it lands, so an interrupted paid run keeps what it finished.
-- **A versioned prompt** (`PROMPT_VERSION`) and the temperature are recorded with every run. Temperature is 0
-  for Claude and Ollama. For OpenAI it is left at the default unless `LLM_EVAL_OPENAI_TEMPERATURE` is set,
-  because reasoning models reject any other value.
+- **A versioned prompt** (`PROMPT_VERSION`), the temperature and, for Bedrock, the region are recorded with
+  every run. Temperature is 0 for Bedrock and Ollama. Current Claude models (default `claude-opus-5-5`) and
+  OpenAI reasoning models reject a temperature, so for `anthropic` and `openai` it is sent only when
+  `LLM_EVAL_ANTHROPIC_TEMPERATURE` / `LLM_EVAL_OPENAI_TEMPERATURE` is set. Claude runs at effort `low`
+  (`LLM_EVAL_ANTHROPIC_EFFORT`); a refusal is recorded as `MODEL_ERROR`. A replayed run records
+  the model and prompt version its file reports, and no temperature.
 - **Fleischner 2017 in code** (`fleischner.py`), including the round-to-nearest-mm rule, with boundary tests.
 
 ## Limits
@@ -142,8 +190,11 @@ real ones.
 - One nodule type (pulmonary nodule) and English impressions. The checker reads side, size and follow-up. It
   doesn't read lobe (beyond mapping RUL/LLL etc. to a side), morphology, or comparison with priors; comparison
   language is flagged for review.
-- Single nodules only. Fleischner has a separate table for multiple nodules, which isn't implemented, so studies
-  where the detector reports more than one nodule are marked `OUT_OF_SCOPE` and not scored.
+- Multiple nodules are scored with Fleischner's multiple solid-nodule table, by the largest nodule. The
+  multiple subsolid table isn't implemented (the detector reports no density). Which sentence describes which
+  nodule is decided by a written-down rule (size first, then side; see `docs/METHOD.md`), and the multi-nodule
+  self-test runs on synthetic variants, because the router data never has two detector findings on one study.
+  More than six findings on one study are `OUT_OF_SCOPE`.
 - Fleischner 2017 applies to incidental nodules in low-risk adults 35 and over. It does not cover screening
   (Lung-RADS), younger patients, known cancer or immunosuppression.
 - The data is synthetic. Real reports carry history, comparisons and hedging that this checker doesn't try to
@@ -156,9 +207,10 @@ real ones.
 llm_eval/cases.py        load router results + ground truth
 llm_eval/detector.py     layer 1 metrics, Wilson intervals
 llm_eval/prompt.py       the impression prompt (versioned)
-llm_eval/models/         anthropic, openai, ollama adapters + the scripted model
+llm_eval/models/         anthropic, bedrock, openai, ollama adapters, replay, and the scripted model
 llm_eval/checker.py      layer 2: read the impression, compare with the findings
-llm_eval/fleischner.py   follow-up categories
+llm_eval/fleischner.py   follow-up categories (single and multiple nodules)
+llm_eval/synthetic.py    multi-nodule variants for the checker self-test
 llm_eval/run.py          evaluation, attribution, checker meta-evaluation
 examples/router-150/     150 synthetic studies from dicom-ai-router
 docs/METHOD.md           definitions, and how each number is computed

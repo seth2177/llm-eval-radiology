@@ -3,19 +3,41 @@
   python -m llm_eval run --data examples/router-150 --model scripted --error-rate 0.3 --out out/scripted
   python -m llm_eval run --data examples/router-150 --model anthropic --out out/claude
   python -m llm_eval run --data examples/router-150 --model ollama --model-name llama3.1:8b --out out/local
+  python -m llm_eval run --data examples/router-150 --model bedrock --region us-west-2 --out out/bedrock
+  python -m llm_eval run --data examples/router-150 --model replay --impressions batch_out.jsonl --out out/batch
+  python -m llm_eval prompts --data examples/router-150 --out prompts.jsonl
   python -m llm_eval selftest --data examples/router-150
 
---data is a folder holding results/ and truth/ (a dicom-ai-router workdir works as is).
+--data is a folder holding results/ and truth/ (a dicom-ai-router workdir works as is). It defaults to
+"example": the 150 studies in examples/router-150, which also ship inside the installed package, so
+
+  pip install llm-eval-radiology && llm-eval-radiology selftest
+
+works from any folder.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
-from .cases import load
-from .models import AnthropicModel, ModelError, OllamaModel, OpenAIModel, ScriptedModel
+from .cases import load, nodule_cases
+from .models import AnthropicModel, BedrockModel, ModelError, OllamaModel, OpenAIModel, ReplayModel, ScriptedModel
+from .prompt import PROMPT_VERSION, SYSTEM, user_message
 from .run import evaluate, summarize, write
+from .synthetic import multi_nodule_variants
+
+EXAMPLE = "example"
+
+
+def _data_dir(p: Path) -> Path:
+    """"example" is the bundled router-150 set: inside the installed package, or examples/ in a checkout."""
+    if str(p) != EXAMPLE or p.exists():
+        return p
+    here = Path(__file__).resolve().parent
+    installed, checkout = here / "_data" / "router-150", here.parent / "examples" / "router-150"
+    return installed if installed.exists() else checkout
 
 
 def _model(a):
@@ -25,18 +47,33 @@ def _model(a):
         return AnthropicModel(model=a.model_name)
     if a.model == "openai":
         return OpenAIModel(model=a.model_name)
+    if a.model == "bedrock":
+        return BedrockModel(model=a.model_name, region=a.region)
+    if a.model == "replay":
+        if not a.impressions:
+            raise ModelError("--model replay needs --impressions <file.jsonl>")
+        return ReplayModel(a.impressions)
     return OllamaModel(model=a.model_name)
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="llm_eval")
+    prog = "llm-eval-radiology" if Path(sys.argv[0]).stem == "llm-eval-radiology" else "python -m llm_eval"
+    ap = argparse.ArgumentParser(prog=prog)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("run", "selftest"):
+    for name in ("run", "selftest", "prompts"):
         p = sub.add_parser(name)
-        p.add_argument("--data", type=Path, required=True, help="folder with results/ and truth/")
+        p.add_argument("--data", type=Path, default=Path(EXAMPLE),
+                       help='folder with results/ and truth/ (default "example": the bundled 150 studies)')
+    pr = sub.choices["prompts"]
+    pr.add_argument("--out", type=Path, required=True, help="JSONL file: one prompt (system + user) per study uid")
+    pr.add_argument("--limit", type=int, help="only the first N chest studies")
     r = sub.choices["run"]
-    r.add_argument("--model", choices=["scripted", "anthropic", "openai", "ollama"], default="scripted")
-    r.add_argument("--model-name", help="provider model id (defaults: anthropic claude-sonnet-5; others required)")
+    r.add_argument("--model", choices=["scripted", "anthropic", "openai", "ollama", "bedrock", "replay"],
+                   default="scripted")
+    r.add_argument("--model-name", help="provider model id (defaults: anthropic claude-sonnet-5, "
+                   "bedrock us.anthropic.claude-sonnet-4-6; openai and ollama required)")
+    r.add_argument("--region", help="bedrock: AWS region (default AWS_REGION, else us-east-1)")
+    r.add_argument("--impressions", type=Path, help='replay: JSONL of {"uid": ..., "impression": ...} lines')
     r.add_argument("--error-rate", type=float, default=0.3,
                    help="scripted model: share of reports with a planted error")
     r.add_argument("--seed", type=int, default=0)
@@ -45,13 +82,16 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     try:
-        cases = load(a.data / "results", a.data / "truth")
+        data = _data_dir(a.data)
+        cases = load(data / "results", data / "truth")
     except FileNotFoundError as e:
         print(f"llm_eval: {e}", file=sys.stderr)
         return 2
 
     if a.cmd == "selftest":
         return _selftest(cases)
+    if a.cmd == "prompts":
+        return _prompts(cases, a.out, a.limit)
 
     try:
         model = _model(a)
@@ -69,15 +109,31 @@ def main(argv=None) -> int:
     return 0
 
 
+def _prompts(cases, out: Path, limit: int | None) -> int:
+    """The exact prompt each study gets, keyed by uid, for an external (batch) runner. The uid is the join
+    key for --model replay; it is not part of the prompt text."""
+    rows = [{"uid": c.study_uid, "prompt_version": PROMPT_VERSION, "system": SYSTEM, "user": user_message(c.ai)}
+            for c in nodule_cases(cases)[:limit]]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    print(f"{len(rows)} prompts ({PROMPT_VERSION}) written to {out}")
+    return 0
+
+
 def _selftest(cases) -> int:
-    """Plant an error in every report, then in none. The checker must catch all and flag none."""
+    """Plant an error in every report, then in none. The checker must catch all and flag none, on the router's
+    studies and on multi-nodule variants of them (the router data has no study with two findings)."""
+    multi = multi_nodule_variants(cases)
     ok = True
     for rate, label in ((1.0, "every report has one planted error"), (0.0, "no planted errors")):
         for seed in range(3):
             m = ScriptedModel(error_rate=rate, seed=seed)
-            res = evaluate(cases, m)
+            res = evaluate(cases + multi, m)
             misses = [r for r in res if set(r.errors) != ({r.planted} if r.planted else set())]
-            print(f"{label}, seed {seed}: {len(res) - len(misses)}/{len(res)} exact")
+            n_multi = sum(len(r.ai) > 1 for r in res)
+            miss_multi = sum(len(r.ai) > 1 for r in misses)
+            print(f"{label}, seed {seed}: {len(res) - len(misses)}/{len(res)} exact "
+                  f"(multi-nodule {n_multi - miss_multi}/{n_multi})")
             for r in misses[:5]:
                 print(f"   planted={r.planted} found={r.errors} :: {r.impression}")
             ok &= not misses

@@ -1,0 +1,96 @@
+name: Publish to PyPI
+
+# Trusted Publishing: PyPI trusts this workflow's OIDC token. No API tokens or secrets are stored anywhere.
+# One-time setup on PyPI: pending publisher for this repo, workflow publish.yml, environment pypi.
+#
+# Release by pushing an annotated tag that equals the package version:
+#   git tag -a v1.2.3 -m "release notes"  &&  git push origin v1.2.3
+# The GitHub Release is created after PyPI accepts the upload, with the tag message as its notes.
+# Creating the release in the GitHub UI also works: its new tag triggers this workflow.
+# Or run it by hand from main (Actions -> Publish to PyPI -> Run workflow): it releases the version in the
+# package, and creates the v<version> tag and the GitHub Release with the notes given.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: Release notes
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Tag must equal package version (manual runs release main only)
+        id: version
+        run: |
+          version=$(python -c "import glob, re; print(re.match(r'dist/[^-]+-([^-]+)-', glob.glob('dist/*.whl')[0]).group(1))")
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package version $version"
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::run this workflow from main"
+            exit 1
+          fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Create the GitHub Release (skipped if one already exists for this tag)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists"
+            exit 0
+          fi
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+            git tag -l --format='%(contents)' "$TAG" > notes.md
+            gh release create "$TAG" dist/* --title "$TAG" --notes-file notes.md --verify-tag
+          else
+            printf '%s\n' "$NOTES" > notes.md
+            gh release create "$TAG" dist/* --title "$TAG" --notes-file notes.md --target "$GITHUB_SHA"
+          fi

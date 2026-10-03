@@ -10,19 +10,22 @@ import json
 
 from .cases import AIFinding
 
-PROMPT_VERSION = "impression-v2"
+PROMPT_VERSION = "impression-v3"
 
 SYSTEM = """You write the IMPRESSION section of a chest CT report from an AI nodule detector's output.
 
 Rules:
 - Use only the findings given. Do not add, remove or change any finding.
 - For each nodule give the side (right or left lung) and the size in millimeters.
-- Give one follow-up recommendation using the Fleischner Society 2017 guideline for a single
-  incidental solid nodule in a low-risk adult aged 35 or over, not a screening study (size rounded to the nearest mm):
+- Give one follow-up recommendation for the study using the Fleischner Society 2017 guideline for incidental
+  solid nodules in a low-risk adult aged 35 or over, not a screening study (size rounded to the nearest mm):
+  One nodule:
     < 6 mm: no routine follow-up.   6-8 mm: CT in 6-12 months.
     > 8 mm: consider CT in 3 months, PET/CT, or tissue sampling.
+  More than one nodule (use the largest):
+    < 6 mm: no routine follow-up.   6 mm or more: CT in 3-6 months, then consider CT at 18-24 months.
 - If there are no findings, write exactly: No pulmonary nodule identified.
-- Plain text, at most three sentences. No headings, no preamble."""
+- Plain text: one sentence per nodule, then the recommendation. No headings, no preamble."""
 
 
 def user_message(findings: list[AIFinding]) -> str:

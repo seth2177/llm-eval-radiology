@@ -47,9 +47,9 @@ class CaseResult:
 
 
 def detector_right(case: Case) -> bool:
-    """Right side AND a size that keeps the patient in the correct follow-up category."""
+    """Right side, no extra findings, AND a size that keeps the patient in the correct follow-up category."""
     o = D.outcome(case)
-    return o == D.TN or (o == D.TP and D.management_ok(case))
+    return o == D.TN or (o == D.TP and len(case.ai) == 1 and D.management_ok(case))
 
 
 def _attribution(case: Case, errors: list[str]) -> str:
@@ -121,8 +121,9 @@ def summarize(cases: list[Case], results: list[CaseResult], model: ImpressionMod
     error_counts = Counter(e for r in results for e in r.errors)
     summary = {
         "model": model.name,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": getattr(model, "prompt_version", PROMPT_VERSION),
         "temperature": getattr(model, "temperature", None),
+        **({"region": model.region} if getattr(model, "region", None) else {}),
         "population": {
             "studies": len(cases),
             "not_routed": sum(not c.routed for c in cases),

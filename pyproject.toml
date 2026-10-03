@@ -1,9 +1,61 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
 [project]
 name = "llm-eval-radiology"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Score an imaging AI detector and the LLM that writes its report impression against ground truth"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Seth Turnbo" }]
+keywords = ["radiology", "llm", "evaluation", "imaging-ai", "fleischner", "lung-nodule"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Healthcare Industry",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent",
+]
 dependencies = ["httpx>=0.27"]
+
+[project.optional-dependencies]
+bedrock = ["botocore"]     # SigV4 signing for --model bedrock (not needed with a Bedrock API key)
+
+[project.urls]
+Homepage = "https://github.com/seth2177/llm-eval-radiology"
+Repository = "https://github.com/seth2177/llm-eval-radiology"
+Issues = "https://github.com/seth2177/llm-eval-radiology/issues"
+
+[project.scripts]
+llm-eval-radiology = "llm_eval.__main__:main"
+
+[tool.hatch.version]
+path = "llm_eval/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["llm_eval"]
+
+# The 150 example studies ship inside the package, so `llm-eval-radiology selftest` works from any folder.
+[tool.hatch.build.targets.wheel.force-include]
+"examples/router-150" = "llm_eval/_data/router-150"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/llm_eval",
+  "/examples",
+  "/tests",
+  "/docs",
+  "/requirements*.txt",
+  "/README.md",
+  "/LICENSE",
+]
+exclude = ["**/__pycache__"]
 
 [tool.ruff]
 line-length = 120

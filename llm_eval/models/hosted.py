@@ -35,24 +35,41 @@ def _post(client: httpx.Client, url: str, retries: int, **kw) -> dict:
 
 
 class AnthropicModel(ImpressionModel):
+    """Claude Messages API.
+
+    Current Claude models think on every request and reject a temperature, so the temperature is
+    sent only when LLM_EVAL_ANTHROPIC_TEMPERATURE is set (for older models that accept one). Effort
+    defaults to low (LLM_EVAL_ANTHROPIC_EFFORT, or "default" to leave it out); max_tokens leaves
+    room for the thinking that counts against it.
+    """
     URL = "https://api.anthropic.com/v1/messages"
 
     def __init__(self, model: str | None = None, api_key: str | None = None,
-                 client: httpx.Client | None = None, retries: int = 4):
-        self.model = model or os.environ.get("LLM_EVAL_ANTHROPIC_MODEL", "claude-sonnet-5")
+                 client: httpx.Client | None = None, retries: int = 4,
+                 temperature: float | None = None, effort: str | None = None):
+        self.model = model or os.environ.get("LLM_EVAL_ANTHROPIC_MODEL", "claude-opus-5-5")
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not self.api_key:
             raise ModelError("set ANTHROPIC_API_KEY to use --model anthropic")
-        self.client = client or httpx.Client(timeout=60)
+        self.client = client or httpx.Client(timeout=120)
         self.retries = retries
-        self.temperature = 0
+        env_t = os.environ.get("LLM_EVAL_ANTHROPIC_TEMPERATURE")
+        self.temperature = temperature if temperature is not None else (float(env_t) if env_t else None)
+        effort = effort or os.environ.get("LLM_EVAL_ANTHROPIC_EFFORT", "low")
+        self.effort = None if effort == "default" else effort
         self.name = f"anthropic:{self.model}"
 
     def generate(self, findings: list[AIFinding], case_id: str) -> str:
-        body = {"model": self.model, "max_tokens": 300, "temperature": self.temperature, "system": SYSTEM,
+        body = {"model": self.model, "max_tokens": 8000, "system": SYSTEM,
                 "messages": [{"role": "user", "content": user_message(findings)}]}
+        if self.temperature is not None:
+            body["temperature"] = self.temperature
+        if self.effort:
+            body["output_config"] = {"effort": self.effort}
         headers = {"x-api-key": self.api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
         out = _post(self.client, self.URL, self.retries, json=body, headers=headers)
+        if out.get("stop_reason") == "refusal":
+            raise ModelError("model declined (stop_reason refusal)")
         return "".join(b.get("text", "") for b in out.get("content", []) if b.get("type") == "text").strip()
 
 
