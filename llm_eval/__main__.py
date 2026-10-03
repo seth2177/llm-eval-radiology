@@ -4,6 +4,8 @@
   python -m llm_eval run --data examples/router-150 --model anthropic --out out/claude
   python -m llm_eval run --data examples/router-150 --model ollama --model-name llama3.1:8b --out out/local
   python -m llm_eval run --data examples/router-150 --model bedrock --region us-west-2 --out out/bedrock
+  python -m llm_eval run --data examples/router-150 --model replay --impressions batch_out.jsonl --out out/batch
+  python -m llm_eval prompts --data examples/router-150 --out prompts.jsonl
   python -m llm_eval selftest --data examples/router-150
 
 --data is a folder holding results/ and truth/ (a dicom-ai-router workdir works as is).
@@ -11,11 +13,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
-from .cases import load
-from .models import AnthropicModel, BedrockModel, ModelError, OllamaModel, OpenAIModel, ScriptedModel
+from .cases import load, nodule_cases
+from .models import AnthropicModel, BedrockModel, ModelError, OllamaModel, OpenAIModel, ReplayModel, ScriptedModel
+from .prompt import PROMPT_VERSION, SYSTEM, user_message
 from .run import evaluate, summarize, write
 
 
@@ -28,20 +32,29 @@ def _model(a):
         return OpenAIModel(model=a.model_name)
     if a.model == "bedrock":
         return BedrockModel(model=a.model_name, region=a.region)
+    if a.model == "replay":
+        if not a.impressions:
+            raise ModelError("--model replay needs --impressions <file.jsonl>")
+        return ReplayModel(a.impressions)
     return OllamaModel(model=a.model_name)
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="llm_eval")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("run", "selftest"):
+    for name in ("run", "selftest", "prompts"):
         p = sub.add_parser(name)
         p.add_argument("--data", type=Path, required=True, help="folder with results/ and truth/")
+    pr = sub.choices["prompts"]
+    pr.add_argument("--out", type=Path, required=True, help="JSONL file: one prompt (system + user) per study uid")
+    pr.add_argument("--limit", type=int, help="only the first N chest studies")
     r = sub.choices["run"]
-    r.add_argument("--model", choices=["scripted", "anthropic", "openai", "ollama", "bedrock"], default="scripted")
+    r.add_argument("--model", choices=["scripted", "anthropic", "openai", "ollama", "bedrock", "replay"],
+                   default="scripted")
     r.add_argument("--model-name", help="provider model id (defaults: anthropic claude-sonnet-5, "
                    "bedrock us.anthropic.claude-sonnet-4-6; openai and ollama required)")
     r.add_argument("--region", help="bedrock: AWS region (default AWS_REGION, else us-east-1)")
+    r.add_argument("--impressions", type=Path, help='replay: JSONL of {"uid": ..., "impression": ...} lines')
     r.add_argument("--error-rate", type=float, default=0.3,
                    help="scripted model: share of reports with a planted error")
     r.add_argument("--seed", type=int, default=0)
@@ -57,6 +70,8 @@ def main(argv=None) -> int:
 
     if a.cmd == "selftest":
         return _selftest(cases)
+    if a.cmd == "prompts":
+        return _prompts(cases, a.out, a.limit)
 
     try:
         model = _model(a)
@@ -71,6 +86,17 @@ def main(argv=None) -> int:
     llm = summary["llm"]["faithful"]
     print(f"{summary['model']}: {llm['k']}/{llm['n']} reports faithful to the detector; "
           f"report written to {a.out / 'report.md'}")
+    return 0
+
+
+def _prompts(cases, out: Path, limit: int | None) -> int:
+    """The exact prompt each study gets, keyed by uid, for an external (batch) runner. The uid is the join
+    key for --model replay; it is not part of the prompt text."""
+    rows = [{"uid": c.study_uid, "prompt_version": PROMPT_VERSION, "system": SYSTEM, "user": user_message(c.ai)}
+            for c in nodule_cases(cases)[:limit]]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    print(f"{len(rows)} prompts ({PROMPT_VERSION}) written to {out}")
     return 0
 
 

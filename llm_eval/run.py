@@ -121,7 +121,7 @@ def summarize(cases: list[Case], results: list[CaseResult], model: ImpressionMod
     error_counts = Counter(e for r in results for e in r.errors)
     summary = {
         "model": model.name,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": getattr(model, "prompt_version", PROMPT_VERSION),
         "temperature": getattr(model, "temperature", None),
         **({"region": model.region} if getattr(model, "region", None) else {}),
         "population": {
