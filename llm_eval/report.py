@@ -16,7 +16,8 @@ def markdown(s: dict, results: list[CaseResult]) -> str:
     lines = [
         "# LLM report evaluation",
         "",
-        f"Model: `{s['model']}` · prompt `{s['prompt_version']}`",
+        f"Model: `{s['model']}`" + (f" · region `{s['region']}`" if s.get("region") else "")
+        + f" · prompt `{s['prompt_version']}`",
         "",
         f"{p['studies']} studies: {p['not_routed']} not routed (no rule matched), {p['routed_to_qa']} QA phantoms, "
         f"{p['scored_chest']} chest CTs scored ({p['scored_in_this_run']} in this run).",

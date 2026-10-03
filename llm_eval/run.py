@@ -123,6 +123,7 @@ def summarize(cases: list[Case], results: list[CaseResult], model: ImpressionMod
         "model": model.name,
         "prompt_version": PROMPT_VERSION,
         "temperature": getattr(model, "temperature", None),
+        **({"region": model.region} if getattr(model, "region", None) else {}),
         "population": {
             "studies": len(cases),
             "not_routed": sum(not c.routed for c in cases),

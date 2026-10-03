@@ -3,6 +3,7 @@
   python -m llm_eval run --data examples/router-150 --model scripted --error-rate 0.3 --out out/scripted
   python -m llm_eval run --data examples/router-150 --model anthropic --out out/claude
   python -m llm_eval run --data examples/router-150 --model ollama --model-name llama3.1:8b --out out/local
+  python -m llm_eval run --data examples/router-150 --model bedrock --region us-west-2 --out out/bedrock
   python -m llm_eval selftest --data examples/router-150
 
 --data is a folder holding results/ and truth/ (a dicom-ai-router workdir works as is).
@@ -14,7 +15,7 @@ import sys
 from pathlib import Path
 
 from .cases import load
-from .models import AnthropicModel, ModelError, OllamaModel, OpenAIModel, ScriptedModel
+from .models import AnthropicModel, BedrockModel, ModelError, OllamaModel, OpenAIModel, ScriptedModel
 from .run import evaluate, summarize, write
 
 
@@ -25,6 +26,8 @@ def _model(a):
         return AnthropicModel(model=a.model_name)
     if a.model == "openai":
         return OpenAIModel(model=a.model_name)
+    if a.model == "bedrock":
+        return BedrockModel(model=a.model_name, region=a.region)
     return OllamaModel(model=a.model_name)
 
 
@@ -35,8 +38,10 @@ def main(argv=None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--data", type=Path, required=True, help="folder with results/ and truth/")
     r = sub.choices["run"]
-    r.add_argument("--model", choices=["scripted", "anthropic", "openai", "ollama"], default="scripted")
-    r.add_argument("--model-name", help="provider model id (defaults: anthropic claude-sonnet-5; others required)")
+    r.add_argument("--model", choices=["scripted", "anthropic", "openai", "ollama", "bedrock"], default="scripted")
+    r.add_argument("--model-name", help="provider model id (defaults: anthropic claude-sonnet-5, "
+                   "bedrock us.anthropic.claude-sonnet-4-6; openai and ollama required)")
+    r.add_argument("--region", help="bedrock: AWS region (default AWS_REGION, else us-east-1)")
     r.add_argument("--error-rate", type=float, default=0.3,
                    help="scripted model: share of reports with a planted error")
     r.add_argument("--seed", type=int, default=0)
